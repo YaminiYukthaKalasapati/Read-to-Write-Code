@@ -21,13 +21,13 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
 // N.B. Do not call any JMeter methods; the jar is standalone
-
 
 /**
  * Implements a client that can talk to the JMeter BeanShell server.
@@ -36,29 +36,30 @@ public class BeanShellClient {
 
     private static final int MINARGS = 3;
 
-    public static void main(String [] args) throws Exception{
-        if (args.length < MINARGS){
-            System.out.println("Please provide "+MINARGS+" or more arguments:");
+    public static void main(String[] args) {
+        if (args.length < MINARGS) {
+            System.out.println("Please provide " + MINARGS + " or more arguments:");
             System.out.println("serverhost serverport filename [arg1 arg2 ...]");
             System.out.println("e.g. ");
             System.out.println("localhost 9000 extras/remote.bsh apple blake 7");
             return;
         }
-        String host=args[0];
+        String host = args[0];
         String portString = args[1];
-        String file=args[2];
+        String file = args[2];
 
-        int port=Integer.parseInt(portString)+1;// convert to telnet port
+        int port = Integer.parseInt(portString) + 1; // convert to telnet port
 
-        System.out.println("Connecting to BSH server on "+host+":"+portString);
+        System.out.println("Connecting to BSH server on " + host + ":" + portString);
 
-        try (Socket sock = new Socket(host,port);
-                InputStream is = sock.getInputStream();
-                OutputStream os = sock.getOutputStream()) {
+        try (Socket sock = new Socket(host, port);
+             InputStream is = sock.getInputStream();
+             OutputStream os = sock.getOutputStream()) {
+
             SockRead sockRead = new SockRead(is);
             sockRead.start();
 
-            sendLine("bsh.prompt=\"\";", os);// Prompt is unnecessary
+            sendLine("bsh.prompt=\"\";", os); // Prompt is unnecessary
 
             sendLine("String [] args={", os);
             for (int i = MINARGS; i < args.length; i++) {
@@ -66,22 +67,33 @@ public class BeanShellClient {
             }
             sendLine("};", os);
 
-            int b;
+            // Efficient file reading and writing using a buffer
+            int bufferSize = 8192; // 8 KB buffer
+            byte[] buffer = new byte[bufferSize];
+            int bytesRead;
             try (BufferedReader fis = Files.newBufferedReader(Paths.get(file))) {
-                while ((b = fis.read()) != -1) {
-                    os.write(b);
+                while ((bytesRead = fis.read(buffer)) != -1) {
+                    os.write(buffer, 0, bytesRead);
                 }
             }
-            sendLine("bsh.prompt=\"bsh % \";", os);// Reset for other users
+
+            sendLine("bsh.prompt=\"bsh % \";", os); // Reset for other users
             os.flush();
             sock.shutdownOutput(); // Tell server that we are done
             sockRead.join(); // wait for script to finish
+        } catch (ConnectException e) {
+            System.err.println("Connection failed to " + host + ":" + port + ". Please check the server.");
+            e.printStackTrace();
+        } catch (IOException e) {
+            System.err.println("I/O error occurred: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            System.err.println("An unexpected error occurred: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    private static void sendLine( String line, OutputStream outPipe )
-    throws IOException
-    {
+    private static void sendLine(String line, OutputStream outPipe) throws IOException {
         outPipe.write(line.getBytes(StandardCharsets.UTF_8));
         outPipe.flush();
     }
@@ -91,24 +103,28 @@ public class BeanShellClient {
         private final InputStream is;
 
         public SockRead(InputStream _is) {
-            this.is=_is;
+            this.is = _is;
         }
 
         @Override
         @SuppressWarnings("CatchAndPrintStackTrace")
-        public void run(){
+        public void run() {
             System.out.println("Reading responses from server ...");
-            int x = 0;
+            int x;
             try {
                 while ((x = is.read()) > -1) {
                     char c = (char) x;
                     System.out.print(c);
                 }
             } catch (IOException e) {
-                e.printStackTrace(); // NOSONAR No way to log here
+                System.err.println("Error while reading server response: " + e.getMessage());
+                e.printStackTrace();
             } finally {
                 System.out.println("... disconnected from server.");
             }
         }
     }
 }
+
+
+
